@@ -8,6 +8,7 @@ to the team member with the most available capacity this week.
 import sys
 import json
 import math
+import time
 import getpass
 from datetime import datetime, timedelta, timezone
 from urllib.request import urlopen, Request
@@ -116,6 +117,20 @@ def make_auth_header(email: str, api_token: str) -> str:
     return f"Basic {creds}"
 
 
+def _urlopen_with_retry(req: Request, retries: int = 3, backoff: float = 2.0):
+    """urlopen with exponential backoff on transient network errors."""
+    for attempt in range(1, retries + 1):
+        try:
+            return urlopen(req)
+        except URLError as e:
+            if attempt == retries:
+                raise
+            print(
+                f"  [WARN] Network error ({e.reason}), retrying in {int(backoff**attempt)}s..."
+            )
+            time.sleep(backoff**attempt)
+
+
 def jira_get(base_url: str, path: str, auth: str, params: dict | None = None) -> dict:
     url = f"{base_url.rstrip('/')}{path}"
     if params:
@@ -124,7 +139,7 @@ def jira_get(base_url: str, path: str, auth: str, params: dict | None = None) ->
         url, headers={"Authorization": auth, "Content-Type": "application/json"}
     )
     try:
-        with urlopen(req) as resp:
+        with _urlopen_with_retry(req) as resp:
             return json.loads(resp.read())
     except HTTPError as e:
         body = e.read().decode()
@@ -142,7 +157,7 @@ def jira_post(base_url: str, path: str, auth: str, payload: dict) -> dict:
         headers={"Authorization": auth, "Content-Type": "application/json"},
     )
     try:
-        with urlopen(req) as resp:
+        with _urlopen_with_retry(req) as resp:
             return json.loads(resp.read())
     except HTTPError as e:
         body = e.read().decode()
@@ -160,7 +175,7 @@ def jira_put(base_url: str, path: str, auth: str, payload: dict) -> None:
         headers={"Authorization": auth, "Content-Type": "application/json"},
     )
     try:
-        with urlopen(req) as resp:
+        with _urlopen_with_retry(req) as resp:
             return
     except HTTPError as e:
         body = e.read().decode()

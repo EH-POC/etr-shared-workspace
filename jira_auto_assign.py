@@ -778,20 +778,37 @@ def main() -> None:
     print("  Jira Auto-Assign: Ready for Engineer → Team")
     print("=" * 60)
 
+    ci_mode = os.environ.get("CI", "").lower() in ("1", "true")
+
+    def require_env(value: str, name: str, prompt_fn):
+        if value:
+            return value
+        if ci_mode:
+            print(f"[ERROR] Required environment variable {name} is not set.")
+            sys.exit(1)
+        return prompt_fn()
+
     # --- Credentials ---
-    email = JIRA_EMAIL or input("\nJira email: ").strip()
-    api_token = JIRA_API_TOKEN or getpass.getpass(
-        "Jira API token (from id.atlassian.net/manage-profile/security/api-tokens): "
+    email = require_env(
+        JIRA_EMAIL, "JIRA_EMAIL", lambda: input("\nJira email: ").strip()
+    )
+    api_token = require_env(
+        JIRA_API_TOKEN,
+        "JIRA_API_TOKEN",
+        lambda: getpass.getpass(
+            "Jira API token (from id.atlassian.net/manage-profile/security/api-tokens): "
+        ),
     )
     auth = make_auth_header(email, api_token)
 
     # --- Board URL ---
-    raw_board = (
-        JIRA_BOARD_URL
-        or input(
+    raw_board = require_env(
+        JIRA_BOARD_URL,
+        "JIRA_BOARD_URL",
+        lambda: input(
             "\nBoard URL or ID\n"
             "  (e.g. https://org.atlassian.net/jira/software/c/projects/KEY/boards/1234): "
-        ).strip()
+        ).strip(),
     )
 
     try:
@@ -802,22 +819,27 @@ def main() -> None:
 
     base_url = JIRA_BASE_URL or parsed_base
     if not base_url:
-        base_url = (
-            input("Jira base URL (e.g. https://org.atlassian.net): ")
-            .strip()
-            .rstrip("/")
+        base_url = require_env(
+            "",
+            "JIRA_BASE_URL",
+            lambda: (
+                input("Jira base URL (e.g. https://org.atlassian.net): ")
+                .strip()
+                .rstrip("/")
+            ),
         )
 
     if project_key:
         print(f"  Detected project: {project_key}, board: {board_id}")
 
     # --- Team ---
-    raw_team = (
-        JIRA_TEAM_URL
-        or input(
+    raw_team = require_env(
+        JIRA_TEAM_URL,
+        "JIRA_TEAM_URL",
+        lambda: input(
             "Team URL or group name\n"
             "  (e.g. https://home.atlassian.com/o/<org>/people/team/<id>?cloudId=...): "
-        ).strip()
+        ).strip(),
     )
 
     team_org_id, team_id, _ = (
@@ -912,9 +934,15 @@ def main() -> None:
             print("\n  Nothing to assign — all tickets skipped.")
         else:
             print()
-            confirm = (
-                input("  Proceed with all assignments above? [Y/n]: ").strip().lower()
-            )
+            if ci_mode:
+                confirm = "y"
+                print("  [CI] Auto-confirming assignments.")
+            else:
+                confirm = (
+                    input("  Proceed with all assignments above? [Y/n]: ")
+                    .strip()
+                    .lower()
+                )
             if confirm not in ("", "y", "yes"):
                 print("  Aborted. No changes made.")
             else:

@@ -2,8 +2,8 @@ name: Jira Auto-Assign
 
 on:
   schedule:
-    # Every Monday at 08:00 UTC+7 (= 01:00 UTC)
-    - cron: '0 1 * * 1'
+    # Every Monday at 09:00 UTC+7 (= 02:00 UTC)
+    - cron: '0 2 * * 1'
   workflow_dispatch: # allow manual trigger from GitHub UI
 
 jobs:
@@ -28,8 +28,8 @@ jobs:
           SLACK_CHANNEL_IDS: ${{ secrets.SLACK_CHANNEL_IDS }}
           EXCLUDE_MEMBERS: ${{ secrets.EXCLUDE_MEMBERS }}
           LOW_PRIORITY_MEMBERS: ${{ secrets.LOW_PRIORITY_MEMBERS }}
-          WEEKLY_CAPACITY_POINTS: ${{ vars.WEEKLY_CAPACITY_POINTS }}
-          OVERLOAD_THRESHOLD: ${{ vars.OVERLOAD_THRESHOLD }}
-          LOW_PRIORITY_THRESHOLD: ${{ vars.LOW_PRIORITY_THRESHOLD }}
-          ON_LEAVE_THRESHOLD: ${{ vars.ON_LEAVE_THRESHOLD }}
+          WEEKLY_CAPACITY_POINTS: '10'
+          OVERLOAD_THRESHOLD: '0.70'
+          LOW_PRIORITY_THRESHOLD: '0.30'
+          ON_LEAVE_THRESHOLD: '0.10'
         run: python jira_auto_assign.py

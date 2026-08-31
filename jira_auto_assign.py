@@ -28,8 +28,8 @@ JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "")
 JIRA_BOARD_URL = os.environ.get("JIRA_BOARD_URL", "")
 JIRA_TEAM_URL = os.environ.get("JIRA_TEAM_URL", "")
 
-WEEKLY_CAPACITY_POINTS = int(os.environ.get("WEEKLY_CAPACITY_POINTS", "10"))
-OVERLOAD_THRESHOLD = float(os.environ.get("OVERLOAD_THRESHOLD", "0.70"))
+WEEKLY_CAPACITY_POINTS = int(os.environ.get("WEEKLY_CAPACITY_POINTS") or "10")
+OVERLOAD_THRESHOLD = float(os.environ.get("OVERLOAD_THRESHOLD") or "0.70")
 
 # Comma-separated emails/accountIds in env, e.g.:
 #   EXCLUDE_MEMBERS="alice@co.com,bob@co.com"
@@ -42,9 +42,9 @@ LOW_PRIORITY_MEMBERS: list[str] = [
     for e in os.environ.get("LOW_PRIORITY_MEMBERS", "").split(",")
     if e.strip()
 ]
-LOW_PRIORITY_THRESHOLD = float(os.environ.get("LOW_PRIORITY_THRESHOLD", "0.30"))
+LOW_PRIORITY_THRESHOLD = float(os.environ.get("LOW_PRIORITY_THRESHOLD") or "0.30")
 
-ON_LEAVE_THRESHOLD = float(os.environ.get("ON_LEAVE_THRESHOLD", "0.10"))
+ON_LEAVE_THRESHOLD = float(os.environ.get("ON_LEAVE_THRESHOLD") or "0.10")
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
 # Comma-separated channel IDs, e.g.: SLACK_CHANNEL_IDS="C066UGGS2PJ,C07SPAT5RM0"

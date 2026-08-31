@@ -1,0 +1,35 @@
+name: Jira Auto-Assign
+
+on:
+  schedule:
+    # Every Monday at 08:00 UTC+7 (= 01:00 UTC)
+    - cron: '0 1 * * 1'
+  workflow_dispatch: # allow manual trigger from GitHub UI
+
+jobs:
+  assign:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run Jira Auto-Assign
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_BOARD_URL: ${{ secrets.JIRA_BOARD_URL }}
+          JIRA_TEAM_URL: ${{ secrets.JIRA_TEAM_URL }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_IDS: ${{ secrets.SLACK_CHANNEL_IDS }}
+          EXCLUDE_MEMBERS: ${{ secrets.EXCLUDE_MEMBERS }}
+          LOW_PRIORITY_MEMBERS: ${{ secrets.LOW_PRIORITY_MEMBERS }}
+          WEEKLY_CAPACITY_POINTS: ${{ vars.WEEKLY_CAPACITY_POINTS }}
+          OVERLOAD_THRESHOLD: ${{ vars.OVERLOAD_THRESHOLD }}
+          LOW_PRIORITY_THRESHOLD: ${{ vars.LOW_PRIORITY_THRESHOLD }}
+          ON_LEAVE_THRESHOLD: ${{ vars.ON_LEAVE_THRESHOLD }}
+        run: python jira_auto_assign.py

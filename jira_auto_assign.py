@@ -7,6 +7,7 @@ to the team member with the most available capacity this week.
 
 import sys
 import json
+import copy
 import math
 import time
 import getpass
@@ -522,6 +523,48 @@ def fetch_user_profile(base_url: str, auth: str, account_id: str) -> dict:
         return {"accountId": account_id, "displayName": account_id, "emailAddress": ""}
 
 
+def fetch_user_profiles_bulk(
+    base_url: str, auth: str, account_ids: list[str]
+) -> list[dict]:
+    """
+    Fetch profiles for multiple users in batches of 50 via /rest/api/3/user/bulk.
+    Reduces N individual API calls to ceil(N/50) calls.
+    Falls back to individual fetches if the bulk endpoint fails.
+    """
+    if not account_ids:
+        return []
+    profiles: list[dict] = []
+    batch_size = 50
+    for i in range(0, len(account_ids), batch_size):
+        batch = account_ids[i : i + batch_size]
+        query = urlencode(
+            [("accountId", aid) for aid in batch] + [("maxResults", batch_size)]
+        )
+        url = f"{base_url.rstrip('/')}/rest/api/3/user/bulk?{query}"
+        req = Request(
+            url, headers={"Authorization": auth, "Content-Type": "application/json"}
+        )
+        try:
+            with _urlopen_with_retry(req) as resp:
+                data = json.loads(resp.read())
+                for user in data.get("values", []):
+                    profiles.append(
+                        {
+                            "accountId": user.get("accountId", ""),
+                            "displayName": user.get("displayName", ""),
+                            "emailAddress": user.get("emailAddress", ""),
+                        }
+                    )
+        except HTTPError as e:
+            body = e.read().decode()
+            print(
+                f"\n[WARN] Bulk user fetch HTTP {e.code} — falling back to individual fetches"
+            )
+            for aid in batch:
+                profiles.append(fetch_user_profile(base_url, auth, aid))
+    return profiles
+
+
 def fetch_team_members_by_team_id(
     base_url: str, auth: str, org_id: str, team_id: str
 ) -> list[dict]:
@@ -546,11 +589,7 @@ def fetch_team_members_by_team_id(
         if not cursor or not data.get("results"):
             break
 
-    members = []
-    for acc in account_ids:
-        profile = fetch_user_profile(base_url, auth, acc)
-        members.append(profile)
-    return members
+    return fetch_user_profiles_bulk(base_url, auth, account_ids)
 
 
 def fetch_team_members(
@@ -680,6 +719,81 @@ def fetch_member_workload(base_url: str, auth: str, account_id: str) -> dict:
         "in_dev_tickets": [ticket_label(i) for i in in_dev_issues],
         "ready_tickets": [ticket_label(i) for i in ready_issues],
     }
+
+
+def fetch_all_members_workload(
+    base_url: str, auth: str, account_ids: list[str]
+) -> dict[str, dict]:
+    """
+    Fetch workload for all members in two paginated JQL queries instead of 2N queries.
+    Returns {account_id: {in_dev_points, total_week_points, in_dev_tickets, ready_tickets}}.
+    """
+    result: dict[str, dict] = {
+        aid: {
+            "in_dev_points": 0.0,
+            "total_week_points": 0.0,
+            "in_dev_tickets": [],
+            "ready_tickets": [],
+        }
+        for aid in account_ids
+    }
+    if not account_ids:
+        return result
+
+    ids_jql = ", ".join(f'"{aid}"' for aid in account_ids)
+
+    def _points(issue: dict) -> float:
+        fields = issue.get("fields", {})
+        sp = fields.get("customfield_10016") or fields.get("customfield_10028") or 1
+        try:
+            return float(sp)
+        except (TypeError, ValueError):
+            return 1.0
+
+    def _label(issue: dict) -> dict:
+        return {"key": issue["key"], "summary": issue["fields"].get("summary", "")}
+
+    def _fetch_all_pages(jql: str) -> list[dict]:
+        issues: list[dict] = []
+        start = 0
+        page = 100
+        while True:
+            data = jira_get(
+                base_url,
+                "/rest/api/3/search/jql",
+                auth,
+                {
+                    "jql": jql,
+                    "startAt": start,
+                    "maxResults": page,
+                    "fields": "summary,customfield_10016,customfield_10028,assignee",
+                },
+            )
+            batch = data.get("issues", [])
+            issues.extend(batch)
+            if start + len(batch) >= data.get("total", 0):
+                break
+            start += page
+        return issues
+
+    for issue in _fetch_all_pages(
+        f'assignee in ({ids_jql}) AND status = "In development"'
+    ):
+        aid = (issue.get("fields", {}).get("assignee") or {}).get("accountId", "")
+        if aid in result:
+            pts = _points(issue)
+            result[aid]["in_dev_points"] += pts
+            result[aid]["total_week_points"] += pts
+            result[aid]["in_dev_tickets"].append(_label(issue))
+
+    for issue in _fetch_all_pages(
+        f'assignee in ({ids_jql}) AND status = "Ready for engineer"'
+    ):
+        aid = (issue.get("fields", {}).get("assignee") or {}).get("accountId", "")
+        if aid in result:
+            result[aid]["ready_tickets"].append(_label(issue))
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -894,10 +1008,11 @@ def main() -> None:
     week_start, week_end = get_current_week_range()
     print(f"  Week range: {week_start} → {week_end}")
 
-    members_workload = []
-    for m in members:
-        wl = fetch_member_workload(base_url, auth, m["accountId"])
-        members_workload.append({**m, **wl, "overloaded": False})
+    account_ids = [m["accountId"] for m in members]
+    all_wl = fetch_all_members_workload(base_url, auth, account_ids)
+    members_workload = [
+        {**m, **all_wl[m["accountId"]], "overloaded": False} for m in members
+    ]
 
     if SLACK_BOT_TOKEN:
         print("  Checking Slack statuses for on-leave detection...")
@@ -909,7 +1024,7 @@ def main() -> None:
     apply_member_policies(members_workload)
     print_workload_table(members_workload)
 
-    assignments = []  # list of (ticket_key, display_label, email)
+    assignments = []  # list of (ticket_key, display_label, email, account_id, summary)
     skipped = []
 
     if not tickets:
@@ -918,8 +1033,6 @@ def main() -> None:
         # --- Plan assignments (dry run) ---
         print(f"\n[4/4] Planning assignments...")
         planned = []
-
-        import copy
 
         wl_draft = copy.deepcopy(members_workload)
 
@@ -976,6 +1089,8 @@ def main() -> None:
                             ticket_key,
                             member_label(assignee),
                             assignee.get("emailAddress", ""),
+                            assignee["accountId"],
+                            ticket["fields"].get("summary", ""),
                         )
                     )
 
@@ -984,7 +1099,7 @@ def main() -> None:
     print("  Done")
     print("=" * 60)
     if assignments:
-        for key, name, _ in assignments:
+        for key, name, *_ in assignments:
             print(f"  {key:12} → {name}")
     else:
         print("  No assignments made.")
@@ -992,21 +1107,25 @@ def main() -> None:
 
     # --- Slack notification ---
     if SLACK_BOT_TOKEN and SLACK_CHANNEL_IDS:
-        # Re-fetch workload so the Slack summary reflects post-assignment state
-        print("  Refreshing workload data for Slack summary...")
-        updated_workload = []
-        for m in members:
-            wl = fetch_member_workload(base_url, auth, m["accountId"])
-            updated_workload.append({**m, **wl, "overloaded": False})
-
-        # Resolve Slack user IDs + re-check on-leave status
-        print("  Resolving Slack user IDs...")
-        user_map = build_slack_user_map(SLACK_BOT_TOKEN, updated_workload)
-        detect_on_leave_from_slack(SLACK_BOT_TOKEN, updated_workload, user_map)
+        # Build post-assignment workload from existing data — no re-fetch needed.
+        # on_leave flags and policy stamps already set on members_workload.
+        updated_workload = copy.deepcopy(members_workload)
+        wl_by_account = {m["accountId"]: m for m in updated_workload}
+        for ticket_key, _label, _email, account_id, summary in assignments:
+            if account_id in wl_by_account:
+                wl_by_account[account_id].setdefault("ready_tickets", []).append(
+                    {"key": ticket_key, "summary": summary}
+                )
         apply_member_policies(updated_workload)
 
+        # Reuse the Slack user map resolved during the workload-check step.
+        user_map = slack_user_map_early
+
+        slack_assignments = [
+            (key, label, email) for key, label, email, *_ in assignments
+        ]
         blocks = build_slack_blocks(
-            assignments,
+            slack_assignments,
             skipped,
             base_url,
             week_start,
@@ -1015,7 +1134,7 @@ def main() -> None:
             user_map,
         )
         fallback = f"Jira Auto-Assign ({week_start}): " + ", ".join(
-            f"{k} → {n}" for k, n, _ in assignments
+            f"{k} → {n}" for k, n, *_ in assignments
         )
         for channel in SLACK_CHANNEL_IDS:
             send_slack_message(SLACK_BOT_TOKEN, channel, fallback, blocks)

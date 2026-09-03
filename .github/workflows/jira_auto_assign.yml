@@ -2,8 +2,9 @@ name: Jira Auto-Assign
 
 on:
   schedule:
-    # Every Monday at 09:00 UTC+7 (= 02:00 UTC)
+    # Monday and Wednesday at 09:00 UTC+7 (= 02:00 UTC)
     - cron: '0 2 * * 1'
+    - cron: '0 2 * * 3'
   workflow_dispatch: # allow manual trigger from GitHub UI
 
 jobs:

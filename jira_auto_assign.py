@@ -927,10 +927,17 @@ def apply_member_policies(members_workload: list[dict]) -> list[dict]:
     return members_workload
 
 
-def select_assignee(members_workload: list[dict]) -> dict | None:
+def select_assignee(
+    members_workload: list[dict], *, allow_excluded: bool = False
+) -> dict | None:
     eligible = [
         m for m in members_workload if not m["excluded"] and not m["overloaded"]
     ]
+    if not eligible and allow_excluded:
+        # Fallback: consider excluded members using the same overload logic.
+        eligible = [
+            m for m in members_workload if m["excluded"] and not m["overloaded"]
+        ]
     if not eligible:
         return None
     min_pts = min(m["total_week_points"] for m in eligible)
@@ -1140,6 +1147,13 @@ def main() -> None:
 
             assignee = select_assignee(wl_draft)
             if assignee is None:
+                assignee = select_assignee(wl_draft, allow_excluded=True)
+                if assignee is not None:
+                    print(
+                        f"  ⚠️  No regular capacity — {ticket_key} will fall back to "
+                        f"excluded member {member_label(assignee)}"
+                    )
+            if assignee is None:
                 skipped.append(ticket_key)
                 continue
 
@@ -1164,7 +1178,10 @@ def main() -> None:
                 summary = ticket["fields"].get("summary", "")[:40]
                 epic = _epic_link(ticket)
                 display_key = f"{epic} › {ticket['key']}" if epic else ticket["key"]
-                print(f"  {display_key:<20}  {summary:<40}  {member_label(assignee)}")
+                fallback_note = "  ⚠️ fallback" if assignee.get("excluded") else ""
+                print(
+                    f"  {display_key:<20}  {summary:<40}  {member_label(assignee)}{fallback_note}"
+                )
         if skipped:
             print(f"\n  Skipped (no capacity): {', '.join(skipped)}")
 

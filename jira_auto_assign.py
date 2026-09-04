@@ -422,21 +422,28 @@ def build_slack_blocks(
             mention = slack_mention(
                 m.get("emailAddress", ""), member_label(m), user_map
             )
+            in_dev = m.get("in_dev_tickets", [])
             ready = m.get("ready_tickets", [])
-            ready_lines = "".join(
-                f"\n     :ticket: "
-                + (
-                    f"<{base_url}/browse/{t['parent_epic']}|{t['parent_epic']}> › "
-                    f"<{base_url}/browse/{t['key']}|{t['key']}>: {t['summary']}"
-                    if t.get("parent_epic")
-                    else f"<{base_url}/browse/{t['key']}|{t['key']}>: {t['summary']}"
-                )
-                for t in ready
+
+            def _ticket_line(prefix: str, t: dict) -> str:
+                epic = t.get("parent_epic", "")
+                if epic:
+                    link = (
+                        f"<{base_url}/browse/{epic}|{epic}> › "
+                        f"<{base_url}/browse/{t['key']}|{t['key']}>: {t['summary']}"
+                    )
+                else:
+                    link = f"<{base_url}/browse/{t['key']}|{t['key']}>: {t['summary']}"
+                return f"\n     {prefix} {link}"
+
+            in_dev_lines = "".join(
+                _ticket_line(":hammer_and_wrench:", t) for t in in_dev
             )
+            ready_lines = "".join(_ticket_line(":ticket:", t) for t in ready)
             workload_lines.append(
                 f"{emoji}  *{mention}*\n"
                 f"     `{bar}` {pct:.0f}%  —  {m['total_week_points']:.1f} pts"
-                f"  ({m['in_dev_points']:.1f} in dev)" + ready_lines
+                f"  ({m['in_dev_points']:.1f} in dev)" + in_dev_lines + ready_lines
             )
         # Slack section blocks cap at ~3000 chars; split into chunks of 10 members
         chunk = "\n\n".join(workload_lines)
@@ -859,18 +866,17 @@ def ticket_points(issue: dict) -> float:
 
 def _epic_link(issue: dict) -> str:
     """
-    Return the parent Epic key for a task/story, or empty string if none.
-    Checks customfield_10014 (classic) and fields.parent (next-gen).
+    Return the parent Epic key for an issue, or empty string if none.
+    Checks customfield_10014 (classic projects) then fields.parent.key (next-gen).
+    Deliberately skips the parent issuetype check — Jira's search API does not
+    reliably return parent.fields.issuetype. Safety is provided by member_epic_keys
+    in fetch_all_members_workload, which only holds keys of actual Epic issues.
     """
     fields = issue.get("fields", {})
     classic = fields.get("customfield_10014") or ""
     if classic:
         return classic
-    parent = fields.get("parent") or {}
-    parent_type = ((parent.get("fields") or {}).get("issuetype") or {}).get("name", "")
-    if parent_type.lower() == "epic":
-        return parent.get("key", "")
-    return ""
+    return (fields.get("parent") or {}).get("key", "")
 
 
 # ---------------------------------------------------------------------------

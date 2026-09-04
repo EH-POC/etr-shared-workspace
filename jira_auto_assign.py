@@ -338,8 +338,8 @@ import random as _random
 
 def build_slack_blocks(
     assignments: list[
-        tuple[str, str, str]
-    ],  # (ticket_key, assignee_label, assignee_email)
+        tuple[str, str, str, str]
+    ],  # (ticket_key, assignee_label, assignee_email, parent_epic_key)
     skipped: list[str],
     base_url: str,
     week_start: str,
@@ -349,9 +349,17 @@ def build_slack_blocks(
 ) -> list:
     """Build Slack Block Kit payload for the assignment summary + workload table."""
     user_map = user_map or {}
+
+    def _ticket_link(key: str, epic: str) -> str:
+        if epic:
+            return (
+                f"<{base_url}/browse/{epic}|{epic}> › <{base_url}/browse/{key}|{key}>"
+            )
+        return f"<{base_url}/browse/{key}|{key}>"
+
     assignment_rows = "\n".join(
-        f"• <{base_url}/browse/{key}|{key}>  →  {slack_mention(email, label, user_map)}"
-        for key, label, email in assignments
+        f"• {_ticket_link(key, epic)}  →  {slack_mention(email, label, user_map)}"
+        for key, label, email, epic in assignments
     )
 
     blocks = [
@@ -416,7 +424,13 @@ def build_slack_blocks(
             )
             ready = m.get("ready_tickets", [])
             ready_lines = "".join(
-                f"\n     :ticket: <{base_url}/browse/{t['key']}|{t['key']}>: {t['summary']}"
+                f"\n     :ticket: "
+                + (
+                    f"<{base_url}/browse/{t['parent_epic']}|{t['parent_epic']}> › "
+                    f"<{base_url}/browse/{t['key']}|{t['key']}>: {t['summary']}"
+                    if t.get("parent_epic")
+                    else f"<{base_url}/browse/{t['key']}|{t['key']}>: {t['summary']}"
+                )
                 for t in ready
             )
             workload_lines.append(
@@ -747,7 +761,11 @@ def fetch_all_members_workload(
         return ticket_points(issue)
 
     def _label(issue: dict) -> dict:
-        return {"key": issue["key"], "summary": issue["fields"].get("summary", "")}
+        return {
+            "key": issue["key"],
+            "summary": issue["fields"].get("summary", ""),
+            "parent_epic": _epic_link(issue),
+        }
 
     def _fetch_all_pages(jql: str) -> list[dict]:
         issues: list[dict] = []
@@ -807,8 +825,16 @@ def fetch_all_members_workload(
         f'assignee in ({ids_jql}) AND status = "Ready for engineer"'
     ):
         aid = (issue.get("fields", {}).get("assignee") or {}).get("accountId", "")
-        if aid in result:
-            result[aid]["ready_tickets"].append(_label(issue))
+        if aid not in result:
+            continue
+        itype = (
+            (issue.get("fields", {}).get("issuetype") or {}).get("name") or ""
+        ).lower()
+        if itype not in ("epic", "bug"):
+            parent_epic = _epic_link(issue)
+            if parent_epic and parent_epic in member_epic_keys.get(aid, set()):
+                continue  # parent Epic is in-dev; skip this ready Task
+        result[aid]["ready_tickets"].append(_label(issue))
 
     return result
 
@@ -1126,11 +1152,13 @@ def main() -> None:
         print("  Planned Assignments (review before confirming)")
         print("=" * 60)
         if planned:
-            print(f"\n  {'Ticket':<12}  {'Summary':<40}  Assignee")
-            print("  " + "-" * 90)
+            print(f"\n  {'Ticket':<20}  {'Summary':<40}  Assignee")
+            print("  " + "-" * 98)
             for ticket, assignee in planned:
                 summary = ticket["fields"].get("summary", "")[:40]
-                print(f"  {ticket['key']:<12}  {summary:<40}  {member_label(assignee)}")
+                epic = _epic_link(ticket)
+                display_key = f"{epic} › {ticket['key']}" if epic else ticket["key"]
+                print(f"  {display_key:<20}  {summary:<40}  {member_label(assignee)}")
         if skipped:
             print(f"\n  Skipped (no capacity): {', '.join(skipped)}")
 
@@ -1159,7 +1187,9 @@ def main() -> None:
                         auth,
                         {"accountId": assignee["accountId"]},
                     )
-                    print(f"  ✓ {ticket_key} → {member_label(assignee)}")
+                    epic = _epic_link(ticket)
+                    display_key = f"{epic} › {ticket_key}" if epic else ticket_key
+                    print(f"  ✓ {display_key} → {member_label(assignee)}")
                     assignments.append(
                         (
                             ticket_key,
@@ -1167,6 +1197,7 @@ def main() -> None:
                             assignee.get("emailAddress", ""),
                             assignee["accountId"],
                             ticket["fields"].get("summary", ""),
+                            epic,
                         )
                     )
 
@@ -1175,8 +1206,9 @@ def main() -> None:
     print("  Done")
     print("=" * 60)
     if assignments:
-        for key, name, *_ in assignments:
-            print(f"  {key:12} → {name}")
+        for key, name, _email, _acc, _summary, epic, *_ in assignments:
+            display_key = f"{epic} › {key}" if epic else key
+            print(f"  {display_key:20} → {name}")
     else:
         print("  No assignments made.")
     print()
@@ -1187,10 +1219,10 @@ def main() -> None:
         # on_leave flags and policy stamps already set on members_workload.
         updated_workload = copy.deepcopy(members_workload)
         wl_by_account = {m["accountId"]: m for m in updated_workload}
-        for ticket_key, _label, _email, account_id, summary in assignments:
+        for ticket_key, _lbl, _email, account_id, summary, epic, *_ in assignments:
             if account_id in wl_by_account:
                 wl_by_account[account_id].setdefault("ready_tickets", []).append(
-                    {"key": ticket_key, "summary": summary}
+                    {"key": ticket_key, "summary": summary, "parent_epic": epic}
                 )
         apply_member_policies(updated_workload)
 
@@ -1198,7 +1230,8 @@ def main() -> None:
         user_map = slack_user_map_early
 
         slack_assignments = [
-            (key, label, email) for key, label, email, *_ in assignments
+            (key, label, email, epic)
+            for key, label, email, _acc, _summary, epic, *_ in assignments
         ]
         blocks = build_slack_blocks(
             slack_assignments,

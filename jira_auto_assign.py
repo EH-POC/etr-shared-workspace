@@ -30,6 +30,15 @@ JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "")
 JIRA_BOARD_URL = os.environ.get("JIRA_BOARD_URL", "")
 JIRA_TEAM_URL = os.environ.get("JIRA_TEAM_URL", "")
 
+# Statuses that count as active in-dev work for capacity calculation.
+IN_DEV_STATUSES = (
+    "In development",
+    "Developer testing",
+    "Ready for code review",
+)
+_IN_DEV_JQL = " OR ".join(f'status = "{s}"' for s in IN_DEV_STATUSES)
+_IN_DEV_JQL_CLAUSE = f"({_IN_DEV_JQL})"
+
 WEEKLY_CAPACITY_POINTS = int(os.environ.get("WEEKLY_CAPACITY_POINTS") or "10")
 OVERLOAD_THRESHOLD = float(os.environ.get("OVERLOAD_THRESHOLD") or "0.70")
 
@@ -725,7 +734,7 @@ def fetch_member_workload(base_url: str, auth: str, account_id: str) -> dict:
     in_dev_issues = _fetch_issues_by_jql(
         base_url,
         auth,
-        f'assignee = "{account_id}" AND status = "In development"',
+        f'assignee = "{account_id}" AND {_IN_DEV_JQL_CLAUSE}',
     )
     ready_issues = _fetch_issues_by_jql(
         base_url,
@@ -798,7 +807,7 @@ def fetch_all_members_workload(
         return issues
 
     in_dev_issues = _fetch_all_pages(
-        f'assignee in ({ids_jql}) AND status = "In development"'
+        f"assignee in ({ids_jql}) AND {_IN_DEV_JQL_CLAUSE}"
     )
 
     # Pass 1: collect each member's in-dev Epic keys so child Tasks can be excluded.

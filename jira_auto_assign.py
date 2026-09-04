@@ -762,7 +762,7 @@ def fetch_all_members_workload(
                     "jql": jql,
                     "startAt": start,
                     "maxResults": page,
-                    "fields": "summary,issuetype,assignee",
+                    "fields": "summary,issuetype,assignee,customfield_10014,parent",
                 },
             )
             batch = data.get("issues", [])
@@ -772,15 +772,36 @@ def fetch_all_members_workload(
             start += page
         return issues
 
-    for issue in _fetch_all_pages(
+    in_dev_issues = _fetch_all_pages(
         f'assignee in ({ids_jql}) AND status = "In development"'
-    ):
+    )
+
+    # Pass 1: collect each member's in-dev Epic keys so child Tasks can be excluded.
+    member_epic_keys: dict[str, set[str]] = {aid: set() for aid in account_ids}
+    for issue in in_dev_issues:
         aid = (issue.get("fields", {}).get("assignee") or {}).get("accountId", "")
-        if aid in result:
-            pts = _points(issue)
-            result[aid]["in_dev_points"] += pts
-            result[aid]["total_week_points"] += pts
-            result[aid]["in_dev_tickets"].append(_label(issue))
+        itype = (
+            (issue.get("fields", {}).get("issuetype") or {}).get("name") or ""
+        ).lower()
+        if aid in member_epic_keys and itype == "epic":
+            member_epic_keys[aid].add(issue["key"])
+
+    # Pass 2: count points, skipping Tasks whose parent Epic is also in-dev.
+    for issue in in_dev_issues:
+        aid = (issue.get("fields", {}).get("assignee") or {}).get("accountId", "")
+        if aid not in result:
+            continue
+        itype = (
+            (issue.get("fields", {}).get("issuetype") or {}).get("name") or ""
+        ).lower()
+        if itype not in ("epic", "bug"):
+            parent_epic = _epic_link(issue)
+            if parent_epic and parent_epic in member_epic_keys.get(aid, set()):
+                continue  # Epic already accounts for this Task's scope
+        pts = _points(issue)
+        result[aid]["in_dev_points"] += pts
+        result[aid]["total_week_points"] += pts
+        result[aid]["in_dev_tickets"].append(_label(issue))
 
     for issue in _fetch_all_pages(
         f'assignee in ({ids_jql}) AND status = "Ready for engineer"'

@@ -933,8 +933,9 @@ def select_assignee(members_workload: list[dict]) -> dict | None:
     ]
     if not eligible:
         return None
-    # Most free time = lowest total_week_points
-    return min(eligible, key=lambda m: m["total_week_points"])
+    min_pts = min(m["total_week_points"] for m in eligible)
+    tied = [m for m in eligible if m["total_week_points"] == min_pts]
+    return _random.choice(tied)
 
 
 # ---------------------------------------------------------------------------
@@ -1079,6 +1080,7 @@ def main() -> None:
             f"  [ERROR] No members found for '{team_label}'. Check the team URL or group name."
         )
         sys.exit(1)
+    _random.shuffle(members)
     print(
         f"  Found {len(members)} member(s): {', '.join(member_label(m) for m in members)}"
     )

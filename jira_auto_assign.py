@@ -32,6 +32,7 @@ JIRA_TEAM_URL = os.environ.get("JIRA_TEAM_URL", "")
 
 # Statuses that count as active in-dev work for capacity calculation.
 IN_DEV_STATUSES = (
+    "Ready for engineer",
     "In development",
     "Developer testing",
     "Ready for code review",
@@ -837,20 +838,8 @@ def fetch_all_members_workload(
         result[aid]["total_week_points"] += pts
         result[aid]["in_dev_tickets"].append(_label(issue))
 
-    for issue in _fetch_all_pages(
-        f'assignee in ({ids_jql}) AND status = "Ready for engineer"'
-    ):
-        aid = (issue.get("fields", {}).get("assignee") or {}).get("accountId", "")
-        if aid not in result:
-            continue
-        itype = (
-            (issue.get("fields", {}).get("issuetype") or {}).get("name") or ""
-        ).lower()
-        if itype not in ("epic", "bug"):
-            parent_epic = _epic_link(issue)
-            if parent_epic and parent_epic in member_epic_keys.get(aid, set()):
-                continue  # parent Epic is in-dev; skip this ready Task
-        result[aid]["ready_tickets"].append(_label(issue))
+    # "Ready for engineer" is now in IN_DEV_STATUSES; those tickets are already
+    # captured in in_dev_issues above. No separate ready_tickets query needed.
 
     return result
 
@@ -1236,7 +1225,9 @@ def main() -> None:
         wl_by_account = {m["accountId"]: m for m in updated_workload}
         for ticket_key, _lbl, _email, account_id, summary, epic, *_ in assignments:
             if account_id in wl_by_account:
-                wl_by_account[account_id].setdefault("ready_tickets", []).append(
+                # Newly assigned tickets land in "Ready for engineer" which now
+                # counts as in-dev; show them as :hammer_and_wrench: items.
+                wl_by_account[account_id].setdefault("in_dev_tickets", []).append(
                     {"key": ticket_key, "summary": summary, "parent_epic": epic}
                 )
         apply_member_policies(updated_workload)

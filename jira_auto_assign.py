@@ -485,6 +485,7 @@ def fetch_unassigned_ready_tickets(
         f"{scope} "
         'AND status = "Ready for engineer" '
         "AND assignee is EMPTY "
+        'AND issuetype != "Story" '
         "ORDER BY priority ASC, created ASC"
     )
     tickets = []
@@ -499,7 +500,7 @@ def fetch_unassigned_ready_tickets(
                 "jql": jql,
                 "startAt": start,
                 "maxResults": page,
-                "fields": "summary,priority,storyPoints,story_points,customfield_10016,customfield_10028",
+                "fields": "summary,priority,issuetype,customfield_10014,parent",
             },
         )
         issues = data.get("issues", [])
@@ -743,12 +744,7 @@ def fetch_all_members_workload(
     ids_jql = ", ".join(f'"{aid}"' for aid in account_ids)
 
     def _points(issue: dict) -> float:
-        fields = issue.get("fields", {})
-        sp = fields.get("customfield_10016") or fields.get("customfield_10028") or 1
-        try:
-            return float(sp)
-        except (TypeError, ValueError):
-            return 1.0
+        return ticket_points(issue)
 
     def _label(issue: dict) -> dict:
         return {"key": issue["key"], "summary": issue["fields"].get("summary", "")}
@@ -766,7 +762,7 @@ def fetch_all_members_workload(
                     "jql": jql,
                     "startAt": start,
                     "maxResults": page,
-                    "fields": "summary,customfield_10016,customfield_10028,assignee",
+                    "fields": "summary,issuetype,assignee",
                 },
             )
             batch = data.get("issues", [])
@@ -797,6 +793,40 @@ def fetch_all_members_workload(
 
 
 # ---------------------------------------------------------------------------
+# Issue-type point weights
+# Story points fields are unreliable; derive capacity cost from issue type instead.
+# ---------------------------------------------------------------------------
+
+_ISSUE_TYPE_POINTS: dict[str, float] = {
+    "epic": 3.0,
+    "bug": 1.0,
+}
+_DEFAULT_TASK_POINTS = 2.0
+
+
+def ticket_points(issue: dict) -> float:
+    """Return capacity cost based on issue type (Epic=3, Bug=1, anything else=2)."""
+    itype = ((issue.get("fields", {}).get("issuetype") or {}).get("name") or "").lower()
+    return _ISSUE_TYPE_POINTS.get(itype, _DEFAULT_TASK_POINTS)
+
+
+def _epic_link(issue: dict) -> str:
+    """
+    Return the parent Epic key for a task/story, or empty string if none.
+    Checks customfield_10014 (classic) and fields.parent (next-gen).
+    """
+    fields = issue.get("fields", {})
+    classic = fields.get("customfield_10014") or ""
+    if classic:
+        return classic
+    parent = fields.get("parent") or {}
+    parent_type = ((parent.get("fields") or {}).get("issuetype") or {}).get("name", "")
+    if parent_type.lower() == "epic":
+        return parent.get("key", "")
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Assignment logic
 # ---------------------------------------------------------------------------
 
@@ -816,7 +846,7 @@ def apply_member_policies(members_workload: list[dict]) -> list[dict]:
     using the threshold appropriate for that member's policy.
 
       excluded     — in EXCLUDE_MEMBERS (never assigned)
-      on_leave     — detected via Slack 🌴 status (capped at ON_LEAVE_THRESHOLD)
+      on_leave     — detected via Slack 🌴 status (never assigned)
       low_priority — in LOW_PRIORITY_MEMBERS (capped at LOW_PRIORITY_THRESHOLD)
       overloaded   — has exceeded their effective threshold
     """
@@ -826,14 +856,16 @@ def apply_member_policies(members_workload: list[dict]) -> list[dict]:
         m.setdefault("on_leave", False)
         m["low_priority"] = matches_member_list(m, LOW_PRIORITY_MEMBERS)
 
+        # On-leave members are never eligible regardless of current workload.
         if m["on_leave"]:
-            threshold = ON_LEAVE_THRESHOLD
-        elif m["low_priority"]:
+            m["overloaded"] = True
+            continue
+
+        if m["low_priority"]:
             threshold = LOW_PRIORITY_THRESHOLD
         else:
             threshold = OVERLOAD_THRESHOLD
 
-        # on_leave with threshold=0 → always overloaded (no tickets assigned)
         if threshold == 0.0:
             m["overloaded"] = True
         else:
@@ -1035,15 +1067,38 @@ def main() -> None:
         planned = []
 
         wl_draft = copy.deepcopy(members_workload)
+        assigned_epic_keys: set[str] = set()
 
         for ticket in tickets:
             ticket_key = ticket["key"]
+            itype = (
+                (ticket.get("fields", {}).get("issuetype") or {}).get("name") or ""
+            ).lower()
+
+            # Skip tasks whose parent Epic is already queued for assignment this run
+            if itype not in ("epic", "bug"):
+                parent_epic = _epic_link(ticket)
+                if parent_epic and parent_epic in assigned_epic_keys:
+                    print(
+                        f"  ↷ {ticket_key} skipped — parent Epic {parent_epic} already assigned this run"
+                    )
+                    skipped.append(ticket_key)
+                    continue
+
             assignee = select_assignee(wl_draft)
             if assignee is None:
                 skipped.append(ticket_key)
                 continue
+
             planned.append((ticket, assignee))
-            assignee["total_week_points"] += 1.0
+            pts = ticket_points(ticket)
+            assignee["total_week_points"] += pts
+
+            if itype == "epic":
+                assigned_epic_keys.add(ticket_key)
+
+            # Re-evaluate overloaded so subsequent tickets respect the new total
+            apply_member_policies(wl_draft)
 
         # --- Show planned assignments for review ---
         print("\n" + "=" * 60)

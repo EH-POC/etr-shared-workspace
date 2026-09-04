@@ -1202,6 +1202,7 @@ def main() -> None:
                             assignee["accountId"],
                             ticket["fields"].get("summary", ""),
                             epic,
+                            ticket_points(ticket),
                         )
                     )
 
@@ -1223,13 +1224,14 @@ def main() -> None:
         # on_leave flags and policy stamps already set on members_workload.
         updated_workload = copy.deepcopy(members_workload)
         wl_by_account = {m["accountId"]: m for m in updated_workload}
-        for ticket_key, _lbl, _email, account_id, summary, epic, *_ in assignments:
+        for ticket_key, _lbl, _email, account_id, summary, epic, pts, *_ in assignments:
             if account_id in wl_by_account:
-                # Newly assigned tickets land in "Ready for engineer" which now
-                # counts as in-dev; show them as :hammer_and_wrench: items.
-                wl_by_account[account_id].setdefault("in_dev_tickets", []).append(
+                m = wl_by_account[account_id]
+                m.setdefault("in_dev_tickets", []).append(
                     {"key": ticket_key, "summary": summary, "parent_epic": epic}
                 )
+                m["in_dev_points"] = m.get("in_dev_points", 0.0) + pts
+                m["total_week_points"] = m.get("total_week_points", 0.0) + pts
         apply_member_policies(updated_workload)
 
         # Reuse the Slack user map resolved during the workload-check step.
